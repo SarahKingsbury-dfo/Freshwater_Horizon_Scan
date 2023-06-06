@@ -2,6 +2,15 @@ library (readxl)
 library(taxize)
 library(magrittr)
 library(taxadb)
+#remotes::install_gitlab('umesc/quant-ecology/climatchr@dev', host = 'code.usgs.gov')
+library(climatchR)
+library(tidyterra)
+library(gridExtra)
+library(ggspatial)
+library(rgbif)
+library(spocc)
+library(scrubr)
+library(maps)
 library (tidyverse)
 
 #Read in the list pulled from CABI horizon scan tool: https://www.cabi.org/HorizonScanningTool/Country/SearchResult
@@ -70,10 +79,7 @@ Uncompleted_sp<-anti_join(tax_fix.itis, completed, by="ScientificName")
 
 #Get species distribution data with the ClimatchR package
 
+## import gbif species occurrence records (see gbif_script.R for details)
 
-#Use Coordinate Cleaner to filter out marine species
-# devtools::install_github("ropensci/CoordinateCleaner")
-# library(CoordinateCleaner)
 
-#Conduct climate match analysis with ClimatchR package
 
