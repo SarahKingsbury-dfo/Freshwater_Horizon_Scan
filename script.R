@@ -13,6 +13,8 @@ library(scrubr)
 library(maps)
 library (tidyverse)
 
+
+########Create the initial list from the CABI horizon scan tool pull
 #Read in the list pulled from CABI horizon scan tool: https://www.cabi.org/HorizonScanningTool/Country/SearchResult
 CABI<-read_excel("data/CABI_Horizon Scanning_pulled 27 Apr 2023.xlsx")
 # names(CABI)
@@ -105,9 +107,9 @@ check_cfia<-fuzzyjoin::regex_left_join(Uncompleted_sp, CFIA_df, by=c("Scientific
 Uncompleted_sp<-Uncompleted_sp%>%
   filter (!ScientificName == (check_cfia$ScientificName))
 
-#Get species distribution data with the ClimatchR package
 
-## import gbif species occurrence records (see gbif_script.R for details)
+
+###### import gbif species occurrence records (see gbif_script.R for details)
 
 sp_records<-read.csv("data/clean_gbif_sp_data.csv")
 
@@ -136,9 +138,65 @@ out<-sp_records_sf%>%
 #plot to double check correctness
 ggplot(nova_scotia)+
   geom_sf()+
-  geom_sf(data=out, aes(col=scientificname))
+  geom_sf(data=out, aes(col=ScientificName))
 
 #remove the species that occur in Nova Scotia
 sp_records<-sp_records%>%
   filter(!specieskey %in% (out$specieskey))
 
+#write csv file for record tracking and to use later fir climate matching
+write.csv(sp_records, "data/sp_occurrence_data.csv")
+
+#####Climate matching between Nova Scotia (assessment area) and everywhere else in the world :)
+remotes::install_gitlab('umesc/quant-ecology/climatchr@dev', host = 'code.usgs.gov')
+
+library(climatchR)
+library(dplyr)
+#import climate data: Currently using the Chelsa data downloaded 4 March 2023 from https://chelsa-climate.org/
+
+# 1. Read in climate data: bioclimate layers BIO1 and BIO5-19 as recommended here: https://code.usgs.gov/umesc/quant-ecology/climatchr
+clim_dir <- 'data/CHELSA/bio'
+#raster stack of bioclimatic layer
+clim_dat <- climatchR::clim_stacker(path = clim_dir)
+
+# 2. Create target reference using your own vector files
+#    --often this is states/provinces/counties in a .shp, .sqlite or similar
+vect_path <- nova_scotia
+target_clim <- intersect_by_target(clim_dat = clim_dat,
+                                   vect_path = vect_path,
+                                   col = 'name')
+# 3. Create output data folder
+dir.create('data/output_data/', showWarnings = F, recursive = T)
+
+# 4. Caluclate bioclimatic vairbales for species detections by species
+files<-'data/sp_occurrence_data.csv'
+
+occ_dat <- read_occ_data(
+  path = files,
+  clim_dat = clim_dat,
+  coords = c('lon', 'lat'),
+  name_col = 'ScientificName',
+  crs = "EPSG:4326"
+)      
+
+species_names<-unique(sp_records$ScientificName)
+species_plots <- list()
+
+for(ScientificName_ in species_names){
+  
+  cat("Working on:",ScientificName_,'\n')
+  
+  species_plots[[ScientificName_]] <- calc_climatch(
+    occ_dat = occ_dat%>% filter(species == ScientificName_),
+    target = target_clim,
+    sensitivity = 2,  
+    progress = T
+  )
+  
+  write.csv(species_plots[[ScientificName_]], paste0('output_data/', ScientificName_,'.csv'), row.names = F)
+  
+  climatch_to_raster(results = species_plots[[ScientificName_]],
+                     template = 'data/CHELSA/bio/CHELSA_bio10_1981-2010_V.2.1.tif',
+                     out_path = paste0('data/output_data/', ScientificName_ ,'.tif'),
+                     overwrite = TRUE)
+}
