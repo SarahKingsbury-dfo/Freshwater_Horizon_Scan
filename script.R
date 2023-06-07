@@ -77,9 +77,68 @@ completed<-read_xlsx("data/Species_screening_list.xlsx", sheet=1)%>%
 #Compare list of species with completed assessments to those without assessments and removed the completed species
 Uncompleted_sp<-anti_join(tax_fix.itis, completed, by="ScientificName")
 
+#Remove species already regulated by CFIA (see list of pests regulated: )
+require(rvest)
+library(data.table)
+
+#First import list of CFIA pest species
+page <- "https://inspection.canada.ca/plant-health/invasive-species/regulated-pests/eng/1363317115207/1363317187811" %>% 
+  read_html()
+
+CFIA_sp<-part2 <- (page %>% 
+                     html_table(header = TRUE))
+#convert list to dataframe
+CFIA_df<-rbindlist(CFIA_sp)%>%
+  select_all(~gsub("\\s+|\\.", "_", .))%>%
+  mutate(ScientificName_CFIA=as.character(`Scientific_name_and_authority_Table_Note 1`),
+         CommonName=as.character(`English_common_name_Table_Note 2`))%>%
+  select(ScientificName_CFIA, CommonName)
+
+#look for species from the CFIA list within our species list
+library(fuzzyjoin)
+library(stringr)
+
+check_cfia<-fuzzyjoin::regex_left_join(Uncompleted_sp, CFIA_df, by=c("ScientificName"="ScientificName_CFIA"))%>%
+  filter(!is.na(ScientificName_CFIA))
+
+#remove species from our list that are included on the CFIA list
+Uncompleted_sp<-Uncompleted_sp%>%
+  filter (!ScientificName == (check_cfia$ScientificName))
+
 #Get species distribution data with the ClimatchR package
 
 ## import gbif species occurrence records (see gbif_script.R for details)
 
+sp_records<-read.csv("data/clean_gbif_sp_data.csv")
 
+#remove species that occur within Nova Scotia (note: this step can be modified to remove species from our list that occur within sink area)
+devtools::install_github("ropensci/rnaturalearth")
+library(rnaturalearth)
+library(sf)
+
+proj <- "+proj=lcc +lon_0=-63.1 +lat_1=43.8 +lat_2=46.9 +lat_0=45.3 +datum=WGS84 +units=m +no_defs"
+crs_string = "+proj=lcc +lat_1=49 +lat_2=77 +lon_0=-91.52 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs"
+ll <- "+proj=longlat +datum=WGS84"
+sf::sf_use_s2(FALSE) # because of "Evaluation error: Found 1 feature with invalid spherical geometry." otherwise
+
+#create the Nova Scotia polygon
+nova_scotia <-  rnaturalearth::ne_states(country="Canada",returnclass = "sf") %>%
+  filter(name=="Nova Scotia")
+
+#convert the gbif species record dataframe to an sf object
+sp_records_sf<-sp_records%>%
+  st_as_sf(coords=c('lon', 'lat'), crs=st_crs(nova_scotia))
+
+#check for the point data intersecting the Nova Scotia polygon
+out<-sp_records_sf%>%
+  st_filter(nova_scotia, join=st_intersects())
+
+#plot to double check correctness
+ggplot(nova_scotia)+
+  geom_sf()+
+  geom_sf(data=out, aes(col=scientificname))
+
+#remove the species that occur in Nova Scotia
+sp_records<-sp_records%>%
+  filter(!specieskey %in% (out$specieskey))
 
