@@ -11,6 +11,7 @@ library(rgbif)
 library(spocc)
 library(scrubr)
 library(maps)
+library (sf)
 library (tidyverse)
 
 
@@ -107,6 +108,8 @@ check_cfia<-fuzzyjoin::regex_left_join(Uncompleted_sp, CFIA_df, by=c("Scientific
 Uncompleted_sp<-Uncompleted_sp%>%
   filter (!ScientificName == (check_cfia$ScientificName))
 
+#create a csv of the final list to be used below and also in the gbif_script.R
+write.csv(Uncompleted_sp, "data/uncomplete_sp.csv")
 
 
 ###### import gbif species occurrence records (see gbif_script.R for details)
@@ -142,13 +145,14 @@ ggplot(nova_scotia)+
 
 #remove the species that occur in Nova Scotia
 sp_records<-sp_records%>%
-  filter(!specieskey %in% (out$specieskey))
+  filter(!specieskey %in% (out$specieskey))%>%
+  relocate(lat, .after = lon)
 
 #write csv file for record tracking and to use later fir climate matching
 write.csv(sp_records, "data/sp_occurrence_data.csv")
 
 #####Climate matching between Nova Scotia (assessment area) and everywhere else in the world :)
-remotes::install_gitlab('umesc/quant-ecology/climatchr@dev', host = 'code.usgs.gov')
+#remotes::install_gitlab('umesc/quant-ecology/climatchr@dev', host = 'code.usgs.gov')
 
 library(climatchR)
 library(dplyr)
@@ -165,38 +169,50 @@ vect_path <- nova_scotia
 target_clim <- intersect_by_target(clim_dat = clim_dat,
                                    vect_path = vect_path,
                                    col = 'name')
+# target_clim<-target_clim%>%
+#   relocate(target_x, .after = target_y)
+
 # 3. Create output data folder
 dir.create('data/output_data/', showWarnings = F, recursive = T)
 
 # 4. Caluclate bioclimatic vairbales for species detections by species
-files<-'data/sp_occurrence_data.csv'
+# files<-'data/sp_occurrence_data.csv'
+files<-'data/Test_data.csv'
 
-occ_dat <- read_occ_data(
+occ_dat <-climatchR:: read_occ_data(
   path = files,
   clim_dat = clim_dat,
-  coords = c('lon', 'lat'),
+  #coords = c('lon', 'lat'),
+  x='lat',
+  y='lon',
   name_col = 'ScientificName',
   crs = "EPSG:4326"
-)      
+)  
 
-species_names<-unique(sp_records$ScientificName)
+occ_dat<- occ_dat%>%
+  drop_na()
+
+species_names<-unique(occ_dat$species)
 species_plots <- list()
 
-for(ScientificName_ in species_names){
+for(species_ in species_names){
   
-  cat("Working on:",ScientificName_,'\n')
+  cat("Working on:",species_,'\n')
   
-  species_plots[[ScientificName_]] <- calc_climatch(
-    occ_dat = occ_dat%>% filter(species == ScientificName_),
+  occ_dat<-occ_dat%>% filter(species == species_)%>%
+  data.table:: as.data.table()
+  
+  results <- calc_climatch(
+    occ_dat = occ_dat,
     target = target_clim,
     sensitivity = 2,  
     progress = T
   )
   
-  write.csv(species_plots[[ScientificName_]], paste0('output_data/', ScientificName_,'.csv'), row.names = F)
+  write.csv(results, paste0('data/output_data/', species_,'.csv'), row.names = F)
   
-  climatch_to_raster(results = species_plots[[ScientificName_]],
-                     template = 'data/CHELSA/bio/CHELSA_bio10_1981-2010_V.2.1.tif',
-                     out_path = paste0('data/output_data/', ScientificName_ ,'.tif'),
-                     overwrite = TRUE)
+  # climatch_to_raster(results = results,
+  #                    template = 'data/CHELSA/bio/CHELSA_bio10_1981-2010_V.2.1.tif',
+  #                    out_path = paste0('data/output_data/', ScientificName_ ,'.tif'),
+  #                    overwrite = TRUE)
 }

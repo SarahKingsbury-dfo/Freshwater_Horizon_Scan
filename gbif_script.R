@@ -13,14 +13,14 @@ user <- "skingsbury" # your gbif.org username
 pwd <- "Benjamin231" # your gbif.org password
 email <- "Sarah.Kingsbury@dfo-mpo.gc.ca" # your email 
 
-#prep buffsea object used to identify coordinates on land
-data("buffland")
+#read in species list 
+Uncompleted_sp<-read.csv("data/uncomplete_sp.csv")
 
 ##download occurrence data 
 
 #extract from csv list of species (https://data-blog.gbif.org/post/downloading-long-species-lists-on-gbif/)
 gbif_taxon_keys_<-Uncompleted_sp%>%
-  head(50)%>%
+ # head(50)%>%
   pull("ScientificName")%>%
   name_backbone_checklist()  %>% # match to backbone
   filter(!matchType == "NONE") %>% # get matched names
@@ -43,18 +43,14 @@ occ_download(pred_in("taxonKey",gbif_taxon_keys_),
                                      format = "SIMPLE_CSV")
 
 #Check download status
-occ_download_wait('0012812-230530130749713')
+#Note: The number in the '' below is what is provided by GBIF. It needs to be updated with each pull.
+occ_download_wait('0015986-230530130749713')
 
 #create object from downloaded data
-# assign(paste0("gbif_obs_data_", listname), occ_download_get(get(paste0("obs_downloads_", listname)), overwrite = T) %>%
-#   occ_download_import(),
-#   envir=globalenv())
+#the key will need to be changed for each pull as each one is unique. 
 
-sp_occ<- occ_download_get(key="0012812-230530130749713", overwrite=TRUE) %>%
+sp_occ<- occ_download_get(key="0015986-230530130749713", overwrite=TRUE) %>%
  occ_download_import()
-
-
-
 
 ######clean_gbif_occ----
 #clean data (https://data-blog.gbif.org/post/gbif-filtering-guide/)
@@ -63,11 +59,13 @@ clean_gbif_occ <- sp_occ%>%
   setNames(tolower(names(.))) %>% # set lowercase column names to work with CoordinateCleaner
   filter(coordinateprecision < 0.01 | is.na(coordinateprecision)) %>% #remove high-uncertainty observations if uncertainty value is present
   filter(coordinateuncertaintyinmeters < 10000 | is.na(coordinateuncertaintyinmeters)) %>% #remove high-uncertainty observations if uncertainty value is present
-  filter(!coordinateuncertaintyinmeters %in% c(301,3036,999,9999)) %>%
-  filter(!decimallatitude == 0 | !decimallongitude == 0) %>% #remove observations with 0,0 coordinates
+  filter(!coordinateuncertaintyinmeters %in% c(301,3036,999,9999))
+clean_gbif_occ <-clean_gbif_occ %>%
+  filter(!decimallatitude  == 0 | !decimallongitude == 0) %>% #remove observations with 0,0 coordinates
   distinct(decimallongitude,decimallatitude,specieskey,datasetkey, .keep_all = TRUE) %>% #remove duplicate records
   filter(species %in% (Uncompleted_sp$ScientificName))%>% #filter for only species in original species list (some taxon keys return higher-order taxa that bring in additional species)
   cc_sea(lon = "decimallongitude" ,lat = "decimallatitude" )%>%
+  cc_inst(lon = "decimallongitude" ,lat = "decimallatitude", buffer=2000, value='clean', verbose = TRUE )%>%
   mutate(eventdate = as.Date(eventdate)) %>% #change date to simpler format (downloads as PosiXct)
   rename("ScientificName"=species, "lon" = decimallongitude, "lat" = decimallatitude, "date" = eventdate) %>% 
   mutate(obs_source = "GBIF")
