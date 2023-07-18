@@ -12,6 +12,7 @@ library(spocc)
 library(scrubr)
 library(maps)
 library (sf)
+library(sp)
 library (tidyverse)
 
 
@@ -151,6 +152,28 @@ sp_records<-sp_records%>%
 #write csv file for record tracking and to use later fir climate matching
 write.csv(sp_records, "data/sp_occurrence_data.csv")
 
+#Separate out species occurrence data into separate csv files because climatchr does not work well with the combined dataframe
+dir.create('data/species_data/', showWarnings = F, recursive = T)
+
+#first import sp records and filter the list of species to only include aquatic species
+sp_to_filter_out<-read_xlsx("data/Freshwater_Terrestrial_Exclusion_List.xlsx")
+sp_to_filter_out[sp_to_filter_out$F_T_freshwater_or_terrestrial=="F",]
+
+sp_records<-read.csv("data/sp_occurrence_data.csv")%>%
+  filter(ScientificName %in% sp_to_filter_out$ScientificName)
+
+sp_records<-sp_records%>%
+  select(ScientificName, lon, lat)
+
+sp_records$ScientificName<- gsub(" ", "_", sp_records$ScientificName)
+
+names(sp_records)[names(sp_records) == "ScientificName"] <- "species"
+
+for(i in unique(sp_records$species)){
+  ID2<-subset(sp_records, species==i)
+  write.csv(ID2, file = paste0("data/species_data/", i, ".csv"))
+}
+
 #####Climate matching between Nova Scotia (assessment area) and everywhere else in the world :)
 #remotes::install_gitlab('umesc/quant-ecology/climatchr@dev', host = 'code.usgs.gov')
 
@@ -159,60 +182,111 @@ library(dplyr)
 #import climate data: Currently using the Chelsa data downloaded 4 March 2023 from https://chelsa-climate.org/
 
 # 1. Read in climate data: bioclimate layers BIO1 and BIO5-19 as recommended here: https://code.usgs.gov/umesc/quant-ecology/climatchr
-clim_dir <- 'data/CHELSA/bio'
+clim_dir <- 'data/CHELSA/standardized_1.2'
 #raster stack of bioclimatic layer
 clim_dat <- climatchR::clim_stacker(path = clim_dir)
 
 # 2. Create target reference using your own vector files
 #    --often this is states/provinces/counties in a .shp, .sqlite or similar
-vect_path <- nova_scotia
+
+Canada<-raster::getData ("GADM", country="CAN", level=1)
+NS<-Canada[Canada$NAME_1=="Nova Scotia"]
+
+#vect_path <- 'Example Scripts from USGS/ns.sqlite'
+
 target_clim <- intersect_by_target(clim_dat = clim_dat,
-                                   vect_path = vect_path,
-                                   col = 'name')
-# target_clim<-target_clim%>%
-#   relocate(target_x, .after = target_y)
+                                   vect_path = Canada,
+                                   col = 'NAME_1')
 
 # 3. Create output data folder
-dir.create('data/output_data/', showWarnings = F, recursive = T)
+#dir.create('data/output_data/', showWarnings = F, recursive = T)
 
-# 4. Caluclate bioclimatic vairbales for species detections by species
-# files<-'data/sp_occurrence_data.csv'
-files<-'data/Test_data.csv'
+# 4. remove any species with already completed assessments before running the climatchR code
+sp_list<- c(list.files('data/output_data/doc/'))
+sp_no_code<-sp_records%>%
+  select(-lon, -lat)%>%
+  distinct()%>%
+  mutate(filename =paste0(species, '.csv'))%>% #convert species list to match file names
+  mutate(has_doc=ifelse(filename %in% sp_list==F, F, T))%>% #identify species already analyzed
+  filter(has_doc==F) #filter out species already assessed
 
-occ_dat <-climatchR:: read_occ_data(
-  path = files,
-  clim_dat = clim_dat,
-  #coords = c('lon', 'lat'),
-  x='lat',
-  y='lon',
-  name_col = 'ScientificName',
-  crs = "EPSG:4326"
-)  
+sp_records<-sp_records%>%
+  filter(species %in% sp_no_code$species)%>% #filtering out species with completed assessments
+  group_by(species)%>% #ClimatchR doesn't work on species with only 1 occurrence report. Group by species.
+  mutate(freq=n())%>% #count how often that species occurs
+  ungroup()%>% #ungroup dataframe
+  filter(freq > 1)%>% #remove species with only 1 occurrence record
+  select(-freq) #remova freq column from dataframe before generating new csv files
 
-occ_dat<- occ_dat%>%
-  drop_na()
-
-species_names<-unique(occ_dat$species)
-species_plots <- list()
-
-for(species_ in species_names){
-  
-  cat("Working on:",species_,'\n')
-  
-  occ_dat<-occ_dat%>% filter(species == species_)%>%
-  data.table:: as.data.table()
-  
-  results <- calc_climatch(
-    occ_dat = occ_dat,
-    target = target_clim,
-    sensitivity = 2,  
-    progress = T
-  )
-  
-  write.csv(results, paste0('data/output_data/', species_,'.csv'), row.names = F)
-  
-  # climatch_to_raster(results = results,
-  #                    template = 'data/CHELSA/bio/CHELSA_bio10_1981-2010_V.2.1.tif',
-  #                    out_path = paste0('data/output_data/', ScientificName_ ,'.tif'),
-  #                    overwrite = TRUE)
+#Wraning: make sure you delete all individual species files from species_data folder before running this code
+for(i in unique(sp_records$species)){
+  ID2<-subset(sp_records, species==i)
+  write.csv(ID2, file = paste0("data/species_data/", i, ".csv"))
 }
+# 5. Caluclate bioclimatic vairbales for species detections by species
+
+files <- list.files('C:/Users/kingsburys/Documents/GitHub/Freshwater_Horizon_Scan_NS/data/species_data/', full.names = T)
+
+for(f in files){
+
+    cat("Working on:",f,'\n')
+    
+    occ_dat <- read_occ_data(
+      path = f,
+      crs = "EPSG:4326",
+      x='lon',
+      y='lat',
+      name_col = 'species',
+      clim_dat = clim_dat
+    )
+    
+    results <- calc_climatch(
+      occ_dat = occ_dat,
+      target = target_clim,
+      sensitivity = 2,  
+      progress = T
+    )
+    
+    write.csv(results, paste0('data/output_data/doc/', unique(results$species),'.csv'), row.names = F)
+    
+    climatch_to_raster(results = results,
+                       template = 'Example Scripts from USGS/CHELSA_bio10_01.tif',
+                       out_path = paste0('data/output_data/plot/', unique(results$species),'.tif'))
+    
+}
+
+#Compile all the individual species climatchR assessments into one dataframe
+files_to_df <- list.files('data/output_data/doc/', full.names = T)
+dat_list<- list()
+
+for (i in files_to_df){
+  dat<-read.csv(i)
+  dat$i<- i #track which iteration produced the list
+  dat_list[[i]]<-dat #add data to the list
+  
+}
+
+species_dat_df<-do.call(rbind, dat_list)
+
+#Filter the combined dataframe for NS and species with scores greater than zero (i.e. unlikley to survive here)
+ns_list<-species_dat_df%>%
+  filter(target=="Nova Scotia")%>%
+  filter(score>0)
+
+distinct_ns_list<-ns_list%>%
+  select(species)%>%
+  distinct()
+
+#save the NS list as a csv file. Will need to work through the screened list to remove the species that are native species or already established
+write.csv(distinct_ns_list, 'data/NS_Screened_Species_List.csv')
+
+#READ BACK-IN THE NS SCREENED SPECIES LIST 
+ns_list_comp<-read.csv('data/NS_Screened_Species_List.csv')%>%
+  filter(native=="N")%>% #filter to only include non-native species
+  filter(established=="N")%>% #filter to retain species not yet established within assessment area
+  filter(aquatic=="Y")%>% #filter to only include aquatic species
+  select(species)
+
+ns_list<-ns_list%>%
+  filter(species %in% ns_list_comp$species)
+
