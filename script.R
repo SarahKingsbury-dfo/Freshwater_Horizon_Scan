@@ -8,6 +8,7 @@ library(tidyterra)
 library(gridExtra)
 library(ggspatial)
 library(rgbif)
+library(terra)
 library(spocc)
 library(scrubr)
 library(maps)
@@ -227,33 +228,33 @@ for(i in unique(sp_records$species)){
 
 files <- list.files('C:/Users/kingsburys/Documents/GitHub/Freshwater_Horizon_Scan_NS/data/species_data/', full.names = T)
 
-for(f in files){
-
-    cat("Working on:",f,'\n')
-    
-    occ_dat <- read_occ_data(
-      path = f,
-      crs = "EPSG:4326",
-      x='lon',
-      y='lat',
-      name_col = 'species',
-      clim_dat = clim_dat
-    )
-    
-    results <- calc_climatch(
-      occ_dat = occ_dat,
-      target = target_clim,
-      sensitivity = 2,  
-      progress = T
-    )
-    
-    write.csv(results, paste0('data/output_data/doc/', unique(results$species),'.csv'), row.names = F)
-    
-    climatch_to_raster(results = results,
-                       template = 'Example Scripts from USGS/CHELSA_bio10_01.tif',
-                       out_path = paste0('data/output_data/plot/', unique(results$species),'.tif'))
-    
-}
+# for(f in files){
+# 
+#     cat("Working on:",f,'\n')
+#     
+#     occ_dat <- read_occ_data(
+#       path = f,
+#       crs = "EPSG:4326",
+#       x='lon',
+#       y='lat',
+#       name_col = 'species',
+#       clim_dat = clim_dat
+#     )
+#     
+#     results <- calc_climatch(
+#       occ_dat = occ_dat,
+#       target = target_clim,
+#       sensitivity = 2,  
+#       progress = T
+#     )
+#     
+#     write.csv(results, paste0('data/output_data/doc/', unique(results$species),'.csv'), row.names = F)
+#     
+#     climatch_to_raster(results = results,
+#                        template = 'Example Scripts from USGS/CHELSA_bio10_01.tif',
+#                        out_path = paste0('data/output_data/plot/', unique(results$species),'.tif'))
+#     
+# }
 
 #Compile all the individual species climatchR assessments into one dataframe
 files_to_df <- list.files('data/output_data/doc/', full.names = T)
@@ -267,6 +268,24 @@ for (i in files_to_df){
 }
 
 species_dat_df<-do.call(rbind, dat_list)
+
+# #reformat plots. Only do this if you find that the plots are backwards from expected. The older version of climatchR had issues with this.
+# for (i in files_to_df){
+#   dat <- read.csv(i)%>%
+#     group_by(species, target_x, target_y)%>% 
+#     summarise(score = max(score, na.rm = T))
+#   
+#   climatch_to_raster(results = dat,
+#                      template = 'Example Scripts from USGS/bio1.tif',
+#                      out_path = paste0('data/output_data/plot/', unique(dat$species),'.tif'),
+#                      overwrite = T)
+#   
+# }
+# 
+# #test plot
+# rast('data/output_data/plot/Abbottina_rivularis.tif')%>%
+#   project('EPSG:4326')%>%
+#   plot()
 
 #Filter the combined dataframe for NS and species with scores greater than zero (i.e. unlikley to survive here)
 ns_list<-species_dat_df%>%
@@ -289,4 +308,67 @@ ns_list_comp<-read.csv('data/NS_Screened_Species_List.csv')%>%
 
 ns_list<-ns_list%>%
   filter(species %in% ns_list_comp$species)
+
+#test ploting ns only
+
+library(tmap)
+library(ggplot2)
+library(raster)
+library(rasterVis)
+library(rgdal)
+library(grid)
+library(scales)
+library(viridis)  # better colors for everyone
+library(ggthemes) # theme_map()
+library(terra)
+library(sp)
+library(stars)
+
+
+
+image<-rast('data/output_data/plot/Abbottina_rivularis.tif')%>%
+    project('EPSG:4326')
+image_df<-terra::as.data.frame (image)
+colnames(image_df)<-c("value", "x", "y") 
+image_spdf<-as(image, "SpatialPixelsDataFrame")
+
+test<-'data/output_data/plot/Abbottina_rivularis.tif'
+test<-raster(test)
+# new_test<-spTransform(test, CRS("+init=epsg:4238"))
+# projection(raster)<-CRS("+init=epsg:4326")
+test_spdf<-as(test, "SpatialPixelsDataFrame")
+# proj4string(test_spdf)<-CRS('+init=epsg:4326 +proj=longlat
+#                             +ellps=WGS84 +datum=WGS84 +no_defs +towgs84=0,0,0')
+test_df <- as.data.frame(test_spdf)
+colnames(test_df) <- c("value", "x", "y")
+
+
+tm_shape(image)+ 
+  tm_raster(title='climate match score')+
+  tm_layout(title='Abbottina_rivularis')
+
+
+
+
+#plot all NS relevant species
+file_plots<-ns_list_comp%>%
+  mutate(filename =paste0('data/output_data/plot/',species, '.tif')) #convert species list to match file names
+
+species_files <- unique(file_plots$filename)
+species_plots <- list()
+
+for(filename_ in species_files) {
+  
+  image<-rast(filename_)%>%
+    project('EPSG:4326')
+  
+  species_plots[[filename_]] = tm_shape(image)+ 
+    tm_raster(title='climate match score')+
+    tm_layout(title=file_plots$species[filename_])
+}
+
+library(patchwork)
+
+allspp_plot <-  tmap_arrange(species_plots, ncol=3) 
+allspp_plot
 
