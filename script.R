@@ -257,7 +257,7 @@ files <- list.files('C:/Users/kingsburys/Documents/GitHub/Freshwater_Horizon_Sca
 # }
 
 #Compile all the individual species climatchR assessments into one dataframe
-files_to_df <- list.files('data/output_data/doc/', full.names = T)
+files_to_df <- list.files('data/output/doc/', full.names = T)
 dat_list<- list()
 
 for (i in files_to_df){
@@ -268,6 +268,17 @@ for (i in files_to_df){
 }
 
 species_dat_df<-do.call(rbind, dat_list)
+
+#save the combined species assessments as a single csv file
+write.csv(species_dat_df, "data/combined_species_assessments.csv")
+
+#find species names
+distinct_sp<-species_dat_df%>%
+  dplyr::select(species)%>%
+  distinct()
+
+#save a separate csv file with only assessed species names
+write.csv(distinct_sp, "data/species_names_assessed.csv")
 
 # #reformat plots. Only do this if you find that the plots are backwards from expected. The older version of climatchR had issues with this.
 # for (i in files_to_df){
@@ -342,10 +353,20 @@ test_spdf<-as(test, "SpatialPixelsDataFrame")
 test_df <- as.data.frame(test_spdf)
 colnames(test_df) <- c("value", "x", "y")
 
+Canada <- rnaturalearth::ne_states(country="Canada",returnclass = "sf")%>%
+  dplyr::select(geometry, name)%>%
+  #filter(name %in% c("Saskatchewan", "Manitoba", "Alberta"))%>%
+  st_set_crs(4326)
 
-tm_shape(image)+ 
-  tm_raster(title='climate match score')+
-  tm_layout(title='Abbottina_rivularis')
+
+tm_shape(image
+         #bbox = st_bbox(Canada)
+         )+ 
+  tm_raster(title='climate match score', breaks=c(1,2,3,4,5,6,7,8,9,10),
+            palette='Spectral')+
+  tm_layout(title='Abbottina_rivularis')+
+  tm_shape(Canada)+
+  tm_polygons(fill=NA, alpha=0.1)
 
 
 
