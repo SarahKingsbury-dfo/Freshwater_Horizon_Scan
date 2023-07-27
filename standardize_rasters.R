@@ -1,7 +1,9 @@
 library(terra)
 
 
-# grab CHELSA 1.2 files
+# grab CHELSA 1.2 files: https://chelsa-climate.org/
+#need CHELSA bio layers bio1 and bio5-19
+
 files <-
   list.files(
     path = 'C:/Users/kingsburys/Documents/GitHub/Freshwater_Horizon_Scan_NS/data/CHELSA/bio',

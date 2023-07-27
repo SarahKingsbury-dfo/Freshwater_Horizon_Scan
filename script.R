@@ -16,7 +16,7 @@ library (sf)
 library(sp)
 library (tidyverse)
 
-
+#Step 1: CABI pull clean list for relevant species
 ########Create the initial list from the CABI horizon scan tool pull
 #Read in the list pulled from CABI horizon scan tool: https://www.cabi.org/HorizonScanningTool/Country/SearchResult
 CABI<-read_excel("data/CABI_Horizon Scanning_pulled 27 Apr 2023.xlsx")
@@ -45,7 +45,7 @@ Species_names<-CABI_filtered_invasive%>%
   dplyr::filter(!is.na(Preferred_scientific_name))
   
 
-
+#Step 2: Use taxize to clean up species names
 #Use taxize to check the spelling of species names
 src_pos<-gnr_datasources()
 
@@ -75,6 +75,7 @@ tax_fix.itis<- tax_fix.itis[match(unique(tax_fix.itis$matched_name2), tax_fix.it
 
 write.csv(tax_fix.short, "data/tax_fix.short.csv")
 
+#Step 3: read in any lists of species with completed assessments or determine irrelevant for this assessment and filter those out of master list
 #read in list of completed species assessments
 completed<-read_xlsx("data/Species_screening_list.xlsx", sheet=1)%>%
   rename(ScientificName=species_latin)
@@ -86,6 +87,7 @@ Uncompleted_sp<-anti_join(tax_fix.itis, completed, by="ScientificName")
 require(rvest)
 library(data.table)
 
+#Step 4: remove CFIA regulated species
 #First import list of CFIA pest species
 page <- "https://inspection.canada.ca/plant-health/invasive-species/regulated-pests/eng/1363317115207/1363317187811" %>% 
   read_html()
@@ -113,11 +115,13 @@ Uncompleted_sp<-Uncompleted_sp%>%
 #create a csv of the final list to be used below and also in the gbif_script.R
 write.csv(Uncompleted_sp, "data/uncomplete_sp.csv")
 
+#Step 5: Now go gbif_script.R and gather occurrence reports for each species then read back in the detections
 
 ###### import gbif species occurrence records (see gbif_script.R for details)
 
 sp_records<-read.csv("data/clean_gbif_sp_data.csv")
 
+#Step 6:fitler species established within assessment area (optional step!)
 #remove species that occur within Nova Scotia (note: this step can be modified to remove species from our list that occur within sink area)
 devtools::install_github("ropensci/rnaturalearth")
 library(rnaturalearth)
@@ -153,6 +157,7 @@ sp_records<-sp_records%>%
 #write csv file for record tracking and to use later fir climate matching
 write.csv(sp_records, "data/sp_occurrence_data.csv")
 
+#Step 7: separate species occurrence reports into separate csv files per species
 #Separate out species occurrence data into separate csv files because climatchr does not work well with the combined dataframe
 dir.create('data/species_data/', showWarnings = F, recursive = T)
 
@@ -163,18 +168,23 @@ sp_to_filter_out[sp_to_filter_out$F_T_freshwater_or_terrestrial=="F",]
 sp_records<-read.csv("data/sp_occurrence_data.csv")%>%
   filter(ScientificName %in% sp_to_filter_out$ScientificName)
 
+#only keep species name and geo corrinates
 sp_records<-sp_records%>%
   select(ScientificName, lon, lat)
 
+#need to remove space in species name and replace with _
 sp_records$ScientificName<- gsub(" ", "_", sp_records$ScientificName)
 
+#renamed column name from "ScientificName to species because that is what the USGS example code uses for column names
 names(sp_records)[names(sp_records) == "ScientificName"] <- "species"
 
+#for each species name within the dataframe (sp_records) write a csv and store in the new folder 
 for(i in unique(sp_records$species)){
   ID2<-subset(sp_records, species==i)
   write.csv(ID2, file = paste0("data/species_data/", i, ".csv"))
 }
 
+#Step 8: complete the climate matching analysis 
 #####Climate matching between Nova Scotia (assessment area) and everywhere else in the world :)
 #remotes::install_gitlab('umesc/quant-ecology/climatchr@dev', host = 'code.usgs.gov')
 
@@ -182,12 +192,12 @@ library(climatchR)
 library(dplyr)
 #import climate data: Currently using the Chelsa data downloaded 4 March 2023 from https://chelsa-climate.org/
 
-# 1. Read in climate data: bioclimate layers BIO1 and BIO5-19 as recommended here: https://code.usgs.gov/umesc/quant-ecology/climatchr
+# A. Read in climate data: bioclimate layers BIO1 and BIO5-19 as recommended here: https://code.usgs.gov/umesc/quant-ecology/climatchr
 clim_dir <- 'data/CHELSA/standardized_1.2'
 #raster stack of bioclimatic layer
 clim_dat <- climatchR::clim_stacker(path = clim_dir)
 
-# 2. Create target reference using your own vector files
+# B. Create target reference using your own vector files
 #    --often this is states/provinces/counties in a .shp, .sqlite or similar
 
 Canada<-raster::getData ("GADM", country="CAN", level=1)
@@ -199,10 +209,11 @@ target_clim <- intersect_by_target(clim_dat = clim_dat,
                                    vect_path = Canada,
                                    col = 'NAME_1')
 
-# 3. Create output data folder
+# C. Create output data folder
 #dir.create('data/output_data/', showWarnings = F, recursive = T)
 
-# 4. remove any species with already completed assessments before running the climatchR code
+# D. Optional!! Only do (D) if you have already run climate matching on some species. Otherwise, skip to (E).
+#remove any species with already completed assessments before running the climatchR code
 sp_list<- c(list.files('data/output_data/doc/'))
 sp_no_code<-sp_records%>%
   select(-lon, -lat)%>%
@@ -224,39 +235,39 @@ for(i in unique(sp_records$species)){
   ID2<-subset(sp_records, species==i)
   write.csv(ID2, file = paste0("data/species_data/", i, ".csv"))
 }
-# 5. Caluclate bioclimatic vairbales for species detections by species
+# E. Caluclate bioclimatic vairbales for species detections by species
 
 files <- list.files('C:/Users/kingsburys/Documents/GitHub/Freshwater_Horizon_Scan_NS/data/species_data/', full.names = T)
 
-# for(f in files){
-# 
-#     cat("Working on:",f,'\n')
-#     
-#     occ_dat <- read_occ_data(
-#       path = f,
-#       crs = "EPSG:4326",
-#       x='lon',
-#       y='lat',
-#       name_col = 'species',
-#       clim_dat = clim_dat
-#     )
-#     
-#     results <- calc_climatch(
-#       occ_dat = occ_dat,
-#       target = target_clim,
-#       sensitivity = 2,  
-#       progress = T
-#     )
-#     
-#     write.csv(results, paste0('data/output_data/doc/', unique(results$species),'.csv'), row.names = F)
-#     
-#     climatch_to_raster(results = results,
-#                        template = 'Example Scripts from USGS/CHELSA_bio10_01.tif',
-#                        out_path = paste0('data/output_data/plot/', unique(results$species),'.tif'))
-#     
-# }
+for(f in files){
 
-#Compile all the individual species climatchR assessments into one dataframe
+    cat("Working on:",f,'\n')
+
+    occ_dat <- read_occ_data(
+      path = f,
+      crs = "EPSG:4326",
+      x='lon',
+      y='lat',
+      name_col = 'species',
+      clim_dat = clim_dat
+    )
+
+    results <- calc_climatch(
+      occ_dat = occ_dat,
+      target = target_clim,
+      sensitivity = 2,
+      progress = T
+    )
+
+    write.csv(results, paste0('data/output_data/doc/', unique(results$species),'.csv'), row.names = F)
+
+    climatch_to_raster(results = results,
+                       template = 'Example Scripts from USGS/CHELSA_bio10_01.tif',
+                       out_path = paste0('data/output_data/plot/', unique(results$species),'.tif'))
+
+}
+
+# F. Compile all the individual species climatchR assessments into one dataframe
 files_to_df <- list.files('data/output/doc/', full.names = T)
 dat_list<- list()
 
@@ -272,7 +283,7 @@ species_dat_df<-do.call(rbind, dat_list)
 #save the combined species assessments as a single csv file
 write.csv(species_dat_df, "data/combined_species_assessments.csv")
 
-#find species names
+# G. For records keeping: find distinct species names
 distinct_sp<-species_dat_df%>%
   dplyr::select(species)%>%
   distinct()
@@ -280,30 +291,33 @@ distinct_sp<-species_dat_df%>%
 #save a separate csv file with only assessed species names
 write.csv(distinct_sp, "data/species_names_assessed.csv")
 
+# H. Only do this step if your tif plot bakcwards
 # #reformat plots. Only do this if you find that the plots are backwards from expected. The older version of climatchR had issues with this.
 # for (i in files_to_df){
 #   dat <- read.csv(i)%>%
-#     group_by(species, target_x, target_y)%>% 
+#     group_by(species, target_x, target_y)%>%
 #     summarise(score = max(score, na.rm = T))
-#   
+# 
 #   climatch_to_raster(results = dat,
 #                      template = 'Example Scripts from USGS/bio1.tif',
 #                      out_path = paste0('data/output_data/plot/', unique(dat$species),'.tif'),
 #                      overwrite = T)
-#   
-# }
 # 
-# #test plot
-# rast('data/output_data/plot/Abbottina_rivularis.tif')%>%
-#   project('EPSG:4326')%>%
-#   plot()
+# }
 
+
+# I. Create a test plot
+rast('data/output_data/plot/Abbottina_rivularis.tif')%>% #replace the path name with whatever species you want to test
+  project('EPSG:4326')%>%
+  plot()
+
+#Step 9: Filter climate matching assessment for applicable assessment region (e.g. Nova Scotia)
 #Filter the combined dataframe for NS and species with scores greater than zero (i.e. unlikley to survive here)
 ns_list<-species_dat_df%>%
-  filter(target=="Nova Scotia")%>%
-  filter(score>0)
+  filter(target=="Nova Scotia")%>% #filter dataframe for Nova Scotia assessment
+  filter(score>0) #only interested in species scoring higher than zero
 
-distinct_ns_list<-ns_list%>%
+distinct_ns_list<-ns_list%>% #look at distinct species names
   select(species)%>%
   distinct()
 
@@ -317,10 +331,11 @@ ns_list_comp<-read.csv('data/NS_Screened_Species_List.csv')%>%
   filter(aquatic=="Y")%>% #filter to only include aquatic species
   select(species)
 
+#filter the Nova Scotia list to only keep relevant species
 ns_list<-ns_list%>%
   filter(species %in% ns_list_comp$species)
 
-#test ploting ns only
+#step 10: Plotting Results-not necessary but nice to have
 
 library(tmap)
 library(ggplot2)
@@ -392,4 +407,25 @@ library(patchwork)
 
 allspp_plot <-  tmap_arrange(species_plots, ncol=3) 
 allspp_plot
+
+#convert all tif files into png files
+library(raster)
+library(terra)
+library(fs)
+
+files_plot <- list.files('data/output_data/plot', full.names = T)
+
+for (f in files_plot){
+  
+  image<-rast(f)%>%
+    project('EPSG:4326')
+  
+  name<-path_file(f)
+  name<-path_ext_remove(name)
+  
+  png(paste0('data/output_data/png/', name, '.png'),  width=718, height= 565, units="px")
+  plot(image, maxpixels=ncell(image))
+  title(main=name)
+  dev.off()
+}
 
