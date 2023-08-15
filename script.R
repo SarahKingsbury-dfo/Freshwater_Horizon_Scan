@@ -333,7 +333,10 @@ batch1<-read.csv('data/combined_species_assessments_batch1.csv')%>%
 batch2<-read.csv('data/combined_species_assessments.csv')%>%
   add_column(batch="Batch2")
 
-batch_combined<-rbind(batch1, batch2)%>%
+batch3<-read.csv('data/combined_species_assessments_batchAntoine.csv')%>%
+  add_column(batch="Batch3")
+
+batch_combined<-rbind(batch1, batch2, batch3)%>%
   dplyr::select(-X, -i)
 
 write.csv(batch_combined, "data/combined_species_assessments_batch_combined.csv")
