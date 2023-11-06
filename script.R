@@ -128,6 +128,7 @@ write.csv(Uncompleted_sp, "data/uncomplete_sp.csv")
 sp_records<-read.csv("data/batch1_gbif_cleaned.csv") #batch 1
 #("data/clean_gbif_sp_data.csv") #batch 2
 
+
 #Step 6:fitler species established within assessment area (optional step!)
 #remove species that occur within Nova Scotia (note: this step can be modified to remove species from our list that occur within sink area)
 devtools::install_github("ropensci/rnaturalearth")
@@ -151,10 +152,10 @@ sp_records_sf<-sp_records%>%
 out<-sp_records_sf%>%
   st_filter(nova_scotia, join=st_intersects())
 
-#plot to double check correctness
-ggplot(nova_scotia)+
-  geom_sf()+
-  geom_sf(data=out, aes(col=ScientificName))
+# #plot to double check correctness
+# ggplot(nova_scotia)+
+#   geom_sf()+
+#   geom_sf(data=out, aes(col=ScientificName))
 
 #remove the species that occur in Nova Scotia
 sp_records<-sp_records%>%
@@ -239,7 +240,7 @@ sp_records<-sp_records%>%
   mutate(freq=n())%>% #count how often that species occurs
   ungroup()%>% #ungroup dataframe
   filter(freq > 1)%>% #remove species with only 1 occurrence record
-  select(-freq) #remova freq column from dataframe before generating new csv files
+  select(-freq) #remove freq column from dataframe before generating new csv files
 
 #Wraning: make sure you delete all individual species files from species_data folder before running this code
 for(i in unique(sp_records$species)){
@@ -447,3 +448,125 @@ for (f in files_plot){ #loop functions: for each plot with plot folder, change f
   dev.off()
 }
 
+############### Future Projections ###############
+
+#Make folder of species data
+batch_1_records<-read.csv("data/batch1_gbif_cleaned.csv")
+batch_2_records<-read.csv("data/clean_gbif_sp_data.csv")
+sp_records<- union(left_join(batch_1_records, batch_2_records), right_join(batch_1_records, batch_2_records)) 
+
+dir.create('data/species_data/all_species/', showWarnings = F, recursive = T)
+
+#first import sp records and filter the list of species to only include aquatic species
+sp_to_filter_out<-read_xlsx("data/Freshwater_Terrestrial_Exclusion_List.xlsx") #only need this step for batch 2
+sp_to_filter_out[sp_to_filter_out$F_T_freshwater_or_terrestrial=="F",]
+
+sp_records<-sp_records%>%
+  filter(ScientificName %in% sp_to_filter_out$ScientificName)  
+
+#only keep species name and geo corrinates
+sp_records<-sp_records%>%
+  select(ScientificName, lon, lat)
+
+#need to remove space in species name and replace with _
+sp_records$ScientificName<- gsub(" ", "_", sp_records$ScientificName)
+
+#renamed column name from "ScientificName to species because that is what the USGS example code uses for column names
+names(sp_records)[names(sp_records) == "ScientificName"] <- "species"
+
+#for each species name within the dataframe (sp_records) write a csv and store in the new folder 
+for(i in unique(sp_records$species)){
+  ID2<-subset(sp_records, species==i)
+  write.csv(ID2, file = paste0("data/species_data/all_species/", i, ".csv")) #change file output path depending on batch number
+}
+
+library(climatchR)
+library(dplyr)
+#import climate data: Currently using the Chelsa data downloaded 4 March 2023 from https://chelsa-climate.org/
+
+# A. Read in climate data: bioclimate layers BIO1 and BIO5-19 as recommended here: https://code.usgs.gov/umesc/quant-ecology/climatchr
+clim_dir <- 'data/CHELSA/2011_2040_IPSL_CM6A_LR_ssp585/raw' #Change directory for each climate change model
+#raster stack of bioclimatic layer
+clim_dat <- climatchR::clim_stacker(path = clim_dir)
+
+# B. Create target reference using your own vector files
+#    --often this is states/provinces/counties in a .shp, .sqlite or similar
+
+Canada<-raster::getData ("GADM", country="CAN", level=1)
+NS<-Canada[Canada$NAME_1=="Nova Scotia"]
+
+#vect_path <- 'Example Scripts from USGS/ns.sqlite'
+
+target_clim <- intersect_by_target(clim_dat = clim_dat,
+                                   vect_path = Canada,
+                                   col = 'NAME_1')
+
+# C. Create output data folder
+dir.create('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/', showWarnings = F, recursive = T) #change climate model as needed
+
+# D. Caluclate bioclimatic vairbales for species detections by species
+
+files <- list.files('C:/Users/kingsburys/Documents/GitHub/Freshwater_Horizon_Scan_NS/data/species_data/all_species/', full.names = T) #change file path for batch number
+
+for(f in files){
+  
+  cat("Working on:",f,'\n')
+  
+  occ_dat <- read_occ_data(
+    path = f,
+    crs = "EPSG:4326",
+    x='lon',
+    y='lat',
+    name_col = 'species',
+    clim_dat = clim_dat
+  )
+  
+  results <- calc_climatch(
+    occ_dat = occ_dat,
+    target = target_clim,
+    sensitivity = 2,
+    progress = T
+  )
+  
+  write.csv(results, paste0('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/doc/', unique(results$species),'.csv'), row.names = F) #change batch number as needed
+  
+  climatch_to_raster(results = results,
+                     template = 'Example Scripts from USGS/CHELSA_bio10_01.tif',
+                     out_path = paste0('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/plot/', unique(results$species),'.tif')) #change batch number as needed
+  
+}
+
+# E. Compile all the individual species climatchR assessments into one dataframe
+files_to_df <- list.files('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/doc/', full.names = T) #change climate model as needed
+dat_list<- list()
+
+for (i in files_to_df){
+  dat<-read.csv(i)
+  dat$i<- i #track which iteration produced the list
+  dat_list[[i]]<-dat #add data to the list
+  
+}
+
+species_dat_df<-do.call(rbind, dat_list)
+
+#save the combined species assessments as a single csv file
+write.csv(species_dat_df, "data/combined_2011_2040_IPSL_CM6A_LR_ssp585.csv") #change batch number in file name as needed
+
+#F. If plots are plotting correctly (i.e. the lat and lon aren't backwards) then load in all batch assessments and combine into one dataframe. 
+#This will make it easier to communicate with other regions which species are of high concern based on climate match. 
+
+batch_CM6A<-read.csv('data/combined_2011_2040_IPSL_CM6A_LR_ssp585.csv')%>%
+  add_column(batch="CM6A")
+
+batch_GFDL<-read.csv('data/combined_GFDL-ESM4.csv')%>%
+  add_column(batch="GFDL")
+
+batch_ESM1<-read.csv('data/combined_MPI-ESM1-2-HR.csv')%>%
+  add_column(batch="ESM1")
+
+batch_combined<-rbind(batch_CM6A, batch_GFDL, batch_ESM1)%>%
+  dplyr::select(-X, -i)
+
+#NOTE: Need to add average score to batch_combined
+
+#write.csv(batch_combined, "data/combined_species_future_ssp585_2011_2040.csv")
