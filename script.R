@@ -129,7 +129,7 @@ sp_records<-read.csv("data/batch1_gbif_cleaned.csv") #batch 1
 #("data/clean_gbif_sp_data.csv") #batch 2
 
 
-#Step 6:fitler species established within assessment area (optional step!)
+#Step 6:filter species established within assessment area (optional step!)
 #remove species that occur within Nova Scotia (note: this step can be modified to remove species from our list that occur within sink area)
 devtools::install_github("ropensci/rnaturalearth")
 library(rnaturalearth)
@@ -242,7 +242,7 @@ sp_records<-sp_records%>%
   filter(freq > 1)%>% #remove species with only 1 occurrence record
   select(-freq) #remove freq column from dataframe before generating new csv files
 
-#Wraning: make sure you delete all individual species files from species_data folder before running this code
+#Warning: make sure you delete all individual species files from species_data folder before running this code
 for(i in unique(sp_records$species)){
   ID2<-subset(sp_records, species==i)
   write.csv(ID2, file = paste0("data/species_data/batch1/", i, ".csv"))#change batch number as needed
@@ -453,12 +453,10 @@ for (f in files_plot){ #loop functions: for each plot with plot folder, change f
 #Make folder of species data
 batch_1_records<-read.csv("data/batch1_gbif_cleaned.csv")
 batch_2_records<-read.csv("data/clean_gbif_sp_data.csv")
-sp_records<- union(left_join(batch_1_records, batch_2_records), right_join(batch_1_records, batch_2_records)) 
-
-dir.create('data/species_data/all_species/', showWarnings = F, recursive = T)
+sp_records<- rbind(batch_1_records,batch_2_records)
 
 #first import sp records and filter the list of species to only include aquatic species
-sp_to_filter_out<-read_xlsx("data/Freshwater_Terrestrial_Exclusion_List.xlsx") #only need this step for batch 2
+sp_to_filter_out<-read_xlsx("data/Freshwater_Terrestrial_Exclusion_List.xlsx") 
 sp_to_filter_out[sp_to_filter_out$F_T_freshwater_or_terrestrial=="F",]
 
 sp_records<-sp_records%>%
@@ -474,18 +472,42 @@ sp_records$ScientificName<- gsub(" ", "_", sp_records$ScientificName)
 #renamed column name from "ScientificName to species because that is what the USGS example code uses for column names
 names(sp_records)[names(sp_records) == "ScientificName"] <- "species"
 
-#for each species name within the dataframe (sp_records) write a csv and store in the new folder 
+#Filter out species with completed assessments
+sp_list<- c(list.files('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/doc/')) #change batch number as needed
+
+sp_no_code<-sp_records%>%
+  select(-lon, -lat)%>%
+  distinct()%>%
+  mutate(filename =paste0(species, '.csv'))%>% #convert species list to match file names
+  mutate(has_doc=ifelse(filename %in% sp_list==F, F, T))%>% #identify species already analyzed
+  filter(has_doc==F) #filter out species already assessed
+
+#remove species from the list that already have assessments completed and/or have one or few occurrence records
+
+sp_records<-sp_records%>%
+  filter(species %in% sp_no_code$species)%>% #filtering out species with completed assessments
+  group_by(species)%>% #ClimatchR doesn't work on species with only 1 occurrence report. Group by species.
+  mutate(freq=n())%>% #count how often that species occurs
+  ungroup()%>% #ungroup dataframe
+  filter(freq > 1)%>% #remove species with only 1 occurrence record
+  select(-freq) #remove freq column from dataframe before generating new csv files
+
+#Warning: Make sure to delete all the csv files from the species_data/all_species/ folder before
+
+dir.create('data/species_data/all_species/', showWarnings = F, recursive = T)
+
 for(i in unique(sp_records$species)){
   ID2<-subset(sp_records, species==i)
-  write.csv(ID2, file = paste0("data/species_data/all_species/", i, ".csv")) #change file output path depending on batch number
+  write.csv(ID2, file = paste0("data/species_data/all_species/", i, ".csv"))#change batch number as needed
 }
+
 
 library(climatchR)
 library(dplyr)
 #import climate data: Currently using the Chelsa data downloaded 4 March 2023 from https://chelsa-climate.org/
 
 # A. Read in climate data: bioclimate layers BIO1 and BIO5-19 as recommended here: https://code.usgs.gov/umesc/quant-ecology/climatchr
-clim_dir <- 'data/CHELSA/2011_2040_IPSL_CM6A_LR_ssp585/raw' #Change directory for each climate change model
+clim_dir <- 'data/CHELSA/2011_2040_IPSL_CM6A_LR_ssp585/Standardized' #Change directory for each climate change model
 #raster stack of bioclimatic layer
 clim_dat <- climatchR::clim_stacker(path = clim_dir)
 
@@ -499,7 +521,11 @@ NS<-Canada[Canada$NAME_1=="Nova Scotia"]
 
 target_clim <- intersect_by_target(clim_dat = clim_dat,
                                    vect_path = Canada,
-                                   col = 'NAME_1')
+                                   col = 'NAME_1'
+                                  )
+
+# #It's possible to further refine the target area to a specific province or territory
+# NS_target<-target_clim[target_clim$target=="Nova Scotia"]
 
 # C. Create output data folder
 dir.create('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/', showWarnings = F, recursive = T) #change climate model as needed
@@ -532,7 +558,9 @@ for(f in files){
   
   climatch_to_raster(results = results,
                      template = 'Example Scripts from USGS/CHELSA_bio10_01.tif',
-                     out_path = paste0('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/plot/', unique(results$species),'.tif')) #change batch number as needed
+                     out_path = paste0('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/plot/', 
+                                       unique(results$species),'.tif'), #change batch number as needed
+                     overwrite=TRUE) #this will overwrite any previous assessments and replace those with the latest assessment
   
 }
 
@@ -570,3 +598,24 @@ batch_combined<-rbind(batch_CM6A, batch_GFDL, batch_ESM1)%>%
 #NOTE: Need to add average score to batch_combined
 
 #write.csv(batch_combined, "data/combined_species_future_ssp585_2011_2040.csv")
+
+#Step 11: convert all tif files into png files because png files are easier to share with non GIS or coder colleagues
+library(raster)
+library(terra)
+library(fs)
+
+files_plot <- list.files('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/plot', full.names = T) #Make list of all the files within the plot folder. change batch number as needed
+
+for (f in files_plot){ #loop functions: for each plot with plot folder, change from tif to png and save to tif folder
+  
+  image<-rast(f)%>% #rasterize the tif
+    project('EPSG:4326') #project to correct projection
+  
+  name<-path_file(f) #read file name. E.g. species_name.csv
+  name<-path_ext_remove(name) #remove the ".csv" part of the name
+  
+  png(paste0('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/png/', name, '.png'),  width=718, height= 565, units="px") #save png files to png folder. change batch number as needed
+  plot(image, maxpixels=ncell(image)) #also, plot the new png file to verify that the code is working correctly
+  title(main=name) #add a title to each plot with the species name
+  dev.off()
+}
