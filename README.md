@@ -1,11 +1,13 @@
 # Freshwater_Horizon_Scan_Maritimes
  Horizon scan for New Brunswick, Nova Scotia, and Prince Edward Island (i.e. the Maritimes), Canada freshwater habitat. 
+ The scripts and data used here were generated in support of Kingsbury et al. (submitted) "A Horizon Scan Watchlist of Freshwater Non-Indigenous Species in the Maritime Provinces of Canada." 
 
  
 **Process**
 
 The R scripts are separated based on which step within the watchlist generation process an assessor may be. Steps are number in the scripts. 
-After completing our own watchlist process, we would recommend pay special attention to steps 1 and 2 as moving too quickly through these steps may result in needing to return to this step and add species back to the working list. Also, paying extra ttention to accounting for when and why species are added to or removed from the working list is recommended as it facilitates easier report or manuscript write ups post-analysis. Lastly, we used the ISEIA tool for our rapid-level risk assessments, but assessors are encouraged to do their own research in tool selection because there are multiple tools that could be a better fit for your purpose. 
+
+After completing our own watchlist process, we recommend special attention be given to steps 1 and 2 as moving too quickly through these steps may result in needing to return to these steps to add species back to the working list. Also, accounting for when and why species are added to or removed from the working list is recommended as it facilitates easier report or manuscript write ups post-analysis. Lastly, we used the ISEIA tool for our rapid-level risk assessments, but assessors are encouraged to do their own research in tool selection because there are multiple tools that could be a better fit for your purpose. 
 
  1. Generate and review the working list of species with Working_list.R.
  2. Compare species working list with other watchlists through the watchlist_comparsion. R script. Add any additional species of interest to the working list. 
