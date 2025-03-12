@@ -14,187 +14,7 @@ library(scrubr)
 library(maps)
 library (sf)
 library(sp)
-library(readxl)
 library (tidyverse)
-
-#Step 1: CABI pull clean list for relevant species
-########Create the initial list from the CABI horizon scan tool pull
-#Read in the list pulled from CABI horizon scan tool: https://www.cabi.org/HorizonScanningTool/Country/SearchResult
-CABI<-read_excel("data/CABI_Horizon Scanning_pulled 27 Apr 2023.xlsx")
-# names(CABI)
-# unique(CABI$Class)
-
-#These are the names of species class that are not applicable to this project
-Undesired_classs<-c("Arachnida", "NA", "Insecta", "Amphibia", "Aves", "Hirudinoidea",
-                    "Secernentea", "Ulvophyceae", "Reptilia", "Phaeophyceae", "Hydrozoa",
-                    "Cestoda", "Ascidiacea" , "Trematoda", "Copepoda", "Adenophorea",
-                    "Myxosporea Myxobolus cerebralis", "Diplopoda", "Ophiuroidea",
-                    "Pinopsida", "Cephalopoda", "Chlorophyceae")
-
-#filter out the undesired classes
-CABI_classFilter<-CABI%>%
-  dplyr::filter(!(Class %in% Undesired_classs))
-
-
-
-#Look for species that are already listed as invasive somewhere
-CABI_filtered_invasive<-CABI_classFilter%>%
-  dplyr::filter(Invasive_Somewhere=="invasive")
-
-Species_names<-CABI_filtered_invasive%>%
-  dplyr::select(Preferred_scientific_name)%>%
-  dplyr::filter(!is.na(Preferred_scientific_name))
-  
-
-#Step 2: Use taxize to clean up species names
-#Use taxize to check the spelling of species names
-src_pos<-gnr_datasources()
-
-src <- c( "ITIS", "Invasive Species of Belgium", "Global Invasive Species Database",
-          "OBIS", "Belgian Species List", "IUCN Red List of Threatened Species", "Database of Vascular Plants of Canada (VASCAN)",
-          "Integrated Taxonomic Information SystemITIS")
-
-subset(gnr_datasources(), title %in% src)
-
-tax_fix_CABI<-CABI_filtered_invasive$Preferred_scientific_name %>%
-  gnr_resolve(data_source_ids = c(3, 104, 125, 147, 149, 157, 163), 
-              with_canonical_ranks=T)
-  # mutate(name_correct = ifelse(user_clean %in% matched_name, T, F)) %>% #determine if the original name was in the list of names retrieved
-  # mutate(species_clean = ifelse(name_correct ==T, user_clean, matched_name[(amatch(user_clean, matched_name, maxDist = Inf))]))
-
-tax_fix.short <- tax_fix_CABI %>%
-  select(submitted_name, matched_name2, score, data_source_title)%>%
-  distinct()
-
-tax_fix.itis<-tax_fix.short%>%
-  filter(data_source_title=="Integrated Taxonomic Information SystemITIS")%>%
-  filter(score >=0.8)
-
-tax_fix.itis<- tax_fix.itis[match(unique(tax_fix.itis$matched_name2), tax_fix.itis$matched_name2),]%>%
-  rename(ScientificName=matched_name2)
-
-
-write.csv(tax_fix.short, "data/tax_fix.short.csv")
-
-#Step 3: read in any lists of species with completed assessments or determine irrelevant for this assessment and filter those out of master list
-#read in list of completed species assessments
-completed<-read_xlsx("data/Species_screening_list.xlsx", sheet=1)%>%
-  rename(ScientificName=species_latin)
-
-#Compare list of species with completed assessments to those without assessments and removed the completed species
-Uncompleted_sp<-anti_join(tax_fix.itis, completed, by="ScientificName") #batch 2 species
-
-batch1<-tax_fix.itis%>% #filter tax_fix.itis for batch 1 species so that climate matching for batch 1 species can b completed. 
-  filter(ScientificName %in% completed$ScientificName)
-
-write.csv(batch1, "data/batch1.csv") #write csv file of batch 1 species then go to gbif_script.R then return to step 5
-
-#Remove species already regulated by CFIA (see list of pests regulated: )
-require(rvest)
-library(data.table)
-
-#Step 4: remove CFIA regulated species
-#First import list of CFIA pest species
-page <- "https://inspection.canada.ca/plant-health/invasive-species/regulated-pests/eng/1363317115207/1363317187811" %>% 
-  read_html()
-
-CFIA_sp<-part2 <- (page %>% 
-                     html_table(header = TRUE))
-#convert list to dataframe
-CFIA_df<-rbindlist(CFIA_sp)%>%
-  select_all(~gsub("\\s+|\\.", "_", .))%>%
-  mutate(ScientificName_CFIA=as.character(`Scientific_name_and_authority_Table_Note 1`),
-         CommonName=as.character(`English_common_name_Table_Note 2`))%>%
-  select(ScientificName_CFIA, CommonName)
-
-#look for species from the CFIA list within our species list
-library(fuzzyjoin)
-library(stringr)
-
-check_cfia<-fuzzyjoin::regex_left_join(Uncompleted_sp, CFIA_df, by=c("ScientificName"="ScientificName_CFIA"))%>%
-  filter(!is.na(ScientificName_CFIA))
-
-#remove species from our list that are included on the CFIA list
-Uncompleted_sp<-Uncompleted_sp%>%
-  filter (!ScientificName == (check_cfia$ScientificName))
-
-#create a csv of the final list to be used below and also in the gbif_script.R
-write.csv(Uncompleted_sp, "data/uncomplete_sp.csv")
-
-#Step 5: Now go gbif_script.R and gather occurrence reports for each species then read back in the detections
-
-###### import gbif species occurrence records (see gbif_script.R for details)
-
-sp_records<-read.csv("data/batch1_gbif_cleaned.csv") #batch 1
-#("data/clean_gbif_sp_data.csv") #batch 2
-
-
-#Step 6:filter species established within assessment area (optional step!)
-#remove species that occur within Nova Scotia (note: this step can be modified to remove species from our list that occur within sink area)
-devtools::install_github("ropensci/rnaturalearth")
-library(rnaturalearth)
-library(sf)
-
-proj <- "+proj=lcc +lon_0=-63.1 +lat_1=43.8 +lat_2=46.9 +lat_0=45.3 +datum=WGS84 +units=m +no_defs"
-crs_string = "+proj=lcc +lat_1=49 +lat_2=77 +lon_0=-91.52 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs"
-ll <- "+proj=longlat +datum=WGS84"
-sf::sf_use_s2(FALSE) # because of "Evaluation error: Found 1 feature with invalid spherical geometry." otherwise
-
-#create the Nova Scotia polygon
-nova_scotia <-  rnaturalearth::ne_states(country="Canada",returnclass = "sf") %>%
-  filter(name=="Nova Scotia")
-
-#convert the gbif species record dataframe to an sf object
-sp_records_sf<-sp_records%>%
-  st_as_sf(coords=c('lon', 'lat'), crs=st_crs(nova_scotia))
-
-#check for the point data intersecting the Nova Scotia polygon
-out<-sp_records_sf%>%
-  st_filter(nova_scotia, join=st_intersects())
-
-# #plot to double check correctness
-# ggplot(nova_scotia)+
-#   geom_sf()+
-#   geom_sf(data=out, aes(col=ScientificName))
-
-#remove the species that occur in Nova Scotia
-sp_records<-sp_records%>%
-  filter(!specieskey %in% (out$specieskey))%>%
-  relocate(lat, .after = lon)
-
-#write csv file for record tracking and to use later fir climate matching
-
-write.csv(sp_records, "data/sp_occurrence_data_batch1.csv") #batch 1
-
-write.csv(sp_records, "data/sp_occurrence_data.csv") #batch 2
-
-
-#Step 7: separate species occurrence reports into separate csv files per species
-#Separate out species occurrence data into separate csv files because climatchr does not work well with the combined dataframe
-dir.create('data/species_data/batch1/', showWarnings = F, recursive = T)
-
-#first import sp records and filter the list of species to only include aquatic species
-sp_to_filter_out<-read_xlsx("data/Freshwater_Terrestrial_Exclusion_List.xlsx") #only need this step for batch 2
-sp_to_filter_out[sp_to_filter_out$F_T_freshwater_or_terrestrial=="F",]
-
-sp_records<-read.csv("data/sp_occurrence_data_batch1.csv")%>%
-  filter(ScientificName %in% sp_to_filter_out$ScientificName)  #Not necessary for batch 1
-
-#only keep species name and geo corrinates
-sp_records<-sp_records%>%
-  select(ScientificName, lon, lat)
-
-#need to remove space in species name and replace with _
-sp_records$ScientificName<- gsub(" ", "_", sp_records$ScientificName)
-
-#renamed column name from "ScientificName to species because that is what the USGS example code uses for column names
-names(sp_records)[names(sp_records) == "ScientificName"] <- "species"
-
-#for each species name within the dataframe (sp_records) write a csv and store in the new folder 
-for(i in unique(sp_records$species)){
-  ID2<-subset(sp_records, species==i)
-  write.csv(ID2, file = paste0("data/species_data/batch1/", i, ".csv")) #change file output path depending on batch number
-}
 
 #Step 8: complete the climate matching analysis 
 #####Climate matching between Nova Scotia (assessment area) and everywhere else in the world :)
@@ -311,22 +131,22 @@ rast('data/output_data/batch1/plot/Abramis_brama.tif')%>% #replace the path name
   project('EPSG:4326')%>%
   plot()
 
-# I. Only do this step if your tif plot bakcwards
+# I. Only do this step if your tif plot backwards. Otherwise skip to J
 # #reformat plots. Only do this if you find that the plots are backwards from expected. The older version of climatchR had issues with this.
-# for (i in files_to_df){
-#   dat <- read.csv(i)%>%
-#     group_by(species, target_x, target_y)%>%
-#     summarise(score = max(score, na.rm = T))
-# 
-#   climatch_to_raster(results = dat,
-#                      template = 'Example Scripts from USGS/bio1.tif',
-#                      out_path = paste0('data/output_data/plot/', unique(dat$species),'.tif'),
-#                      overwrite = T)
-# 
-# }
+for (i in files_to_df){
+  dat <- read.csv(i)%>%
+    group_by(species, target_x, target_y)%>%
+    summarise(score = max(score, na.rm = T))
+
+  climatch_to_raster(results = dat,
+                     template = 'Example Scripts from USGS/bio1.tif',
+                     out_path = paste0('data/output_data/plot/', unique(dat$species),'.tif'),
+                     overwrite = T)
+
+}
 
 #J. If plots are plotting correctly (i.e. the lat and lon aren't backwards) then load in all batch assessments and combine into one dataframe. 
-#This will make it easier to communicate with other regions which species are of high concern based on climate match. 
+#This will make it easier to communicate which species are of high concern based on climate match. 
 
 batch1<-read.csv('data/combined_species_assessments_batch1.csv')%>%
   add_column(batch="Batch1")
@@ -341,30 +161,6 @@ batch_combined<-rbind(batch1, batch2, batch3)%>%
   dplyr::select(-X, -i)
 
 write.csv(batch_combined, "data/combined_species_assessments_batch_combined.csv")
-
-#Step 9: Filter climate matching assessment for applicable assessment region (e.g. Nova Scotia)
-#Filter the combined dataframe for NS and species with scores greater than zero (i.e. unlikley to survive here)
-ns_list<-species_dat_df%>%
-  filter(target=="Nova Scotia")%>% #filter dataframe for Nova Scotia assessment
-  filter(score>0) #only interested in species scoring higher than zero
-
-distinct_ns_list<-ns_list%>% #look at distinct species names
-  select(species)%>%
-  distinct()
-
-#save the NS list as a csv file. Will need to work through the screened list to remove the species that are native species or already established
-write.csv(distinct_ns_list, 'data/NS_Screened_Species_List_batch1.csv') #change batch name as needed
-
-#READ BACK-IN THE NS SCREENED SPECIES LIST 
-ns_list_comp<-read.csv('data/NS_Screened_Species_List_batch1.csv')%>% #change batch name as needed
-  filter(native=="N")%>% #filter to only include non-native species
-  filter(established=="N")%>% #filter to retain species not yet established within assessment area
-  filter(aquatic=="Y")%>% #filter to only include aquatic species
-  select(species)
-
-#filter the Nova Scotia list to only keep relevant species
-ns_list<-ns_list%>%
-  filter(species %in% ns_list_comp$species)
 
 #step 10: Plotting Results as raster files-not necessary but nice to have
 
@@ -473,7 +269,7 @@ sp_records$ScientificName<- gsub(" ", "_", sp_records$ScientificName)
 names(sp_records)[names(sp_records) == "ScientificName"] <- "species"
 
 #Filter out species with completed assessments
-sp_list<- c(list.files('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/doc/')) #change batch number as needed
+sp_list<- c(list.files('data/output_data/MPI-ESM1-2-HR/doc/')) #change batch number/climate model as needed
 
 sp_no_code<-sp_records%>%
   select(-lon, -lat)%>%
@@ -485,7 +281,7 @@ sp_no_code<-sp_records%>%
 #remove species from the list that already have assessments completed and/or have one or few occurrence records
 
 sp_records<-sp_records%>%
-  filter(species %in% sp_no_code$species)%>% #filtering out species with completed assessments
+  #filter(species %in% sp_no_code$species)%>% #filtering out species with completed assessments
   group_by(species)%>% #ClimatchR doesn't work on species with only 1 occurrence report. Group by species.
   mutate(freq=n())%>% #count how often that species occurs
   ungroup()%>% #ungroup dataframe
@@ -507,7 +303,7 @@ library(dplyr)
 #import climate data: Currently using the Chelsa data downloaded 4 March 2023 from https://chelsa-climate.org/
 
 # A. Read in climate data: bioclimate layers BIO1 and BIO5-19 as recommended here: https://code.usgs.gov/umesc/quant-ecology/climatchr
-clim_dir <- 'data/CHELSA/2011_2040_IPSL_CM6A_LR_ssp585/Standardized' #Change directory for each climate change model
+clim_dir <- 'data/CHELSA/MPI-ESM1-2-HR/Standardized' #Change directory for each climate change model
 #raster stack of bioclimatic layer
 clim_dat <- climatchR::clim_stacker(path = clim_dir)
 
@@ -528,7 +324,7 @@ target_clim <- intersect_by_target(clim_dat = clim_dat,
 # NS_target<-target_clim[target_clim$target=="Nova Scotia"]
 
 # C. Create output data folder
-dir.create('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/', showWarnings = F, recursive = T) #change climate model as needed
+#dir.create('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/', showWarnings = F, recursive = T) #change climate model as needed
 
 # D. Caluclate bioclimatic vairbales for species detections by species
 
@@ -554,11 +350,11 @@ for(f in files){
     progress = T
   )
   
-  write.csv(results, paste0('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/doc/', unique(results$species),'.csv'), row.names = F) #change batch number as needed
+  write.csv(results, paste0('data/output_data/MPI-ESM1-2-HR/doc/', unique(results$species),'.csv'), row.names = F) #change batch number as needed
   
   climatch_to_raster(results = results,
                      template = 'Example Scripts from USGS/CHELSA_bio10_01.tif',
-                     out_path = paste0('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/plot/', 
+                     out_path = paste0('data/output_data/MPI-ESM1-2-HR/plot/', 
                                        unique(results$species),'.tif'), #change batch number as needed
                      overwrite=TRUE) #this will overwrite any previous assessments and replace those with the latest assessment
   
@@ -578,44 +374,263 @@ for (i in files_to_df){
 species_dat_df<-do.call(rbind, dat_list)
 
 #save the combined species assessments as a single csv file
-write.csv(species_dat_df, "data/combined_2011_2040_IPSL_CM6A_LR_ssp585.csv") #change batch number in file name as needed
+write.csv(species_dat_df, "data/IPSL_CM6A_LR.csv") #change batch number in file name as needed
 
 #F. If plots are plotting correctly (i.e. the lat and lon aren't backwards) then load in all batch assessments and combine into one dataframe. 
 #This will make it easier to communicate with other regions which species are of high concern based on climate match. 
 
-batch_CM6A<-read.csv('data/combined_2011_2040_IPSL_CM6A_LR_ssp585.csv')%>%
+batch_CM6A<-read.csv('data/IPSL_CM6A_LR.csv')%>%
+  filter (target=="Yukon" & score!= 0)  %>%
   add_column(batch="CM6A")
 
-batch_GFDL<-read.csv('data/combined_GFDL-ESM4.csv')%>%
+batch_GFDL<-read.csv('data/GFDL-ESM4.csv')%>%
+  filter (target== "Yukon"  & score!= 0)  %>%
   add_column(batch="GFDL")
 
-batch_ESM1<-read.csv('data/combined_MPI-ESM1-2-HR.csv')%>%
+batch_ESM1<-read.csv('data/MPI-ESM1-2-HR.csv')%>%
+  filter (target== "Yukon"  & score!= 0)  %>%
   add_column(batch="ESM1")
 
 batch_combined<-rbind(batch_CM6A, batch_GFDL, batch_ESM1)%>%
   dplyr::select(-X, -i)
 
+batch_combined<-batch_combined%>%
+ group_by(species)%>% #group dtaaframe by species
+  mutate(avg_score=mean(score), n=n())%>% #take the average value over the 3 models
+  ungroup() #ungroup dataframe
+
 #NOTE: Need to add average score to batch_combined
 
-#write.csv(batch_combined, "data/combined_species_future_ssp585_2011_2040.csv")
 
-#Step 11: convert all tif files into png files because png files are easier to share with non GIS or coder colleagues
-library(raster)
-library(terra)
-library(fs)
 
-files_plot <- list.files('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/plot', full.names = T) #Make list of all the files within the plot folder. change batch number as needed
+#Step 11: Filter combined list for specific area of interest
+NS_list_2011_2040<-batch_combined%>%
+  mutate(avg_score=as.numeric(avg_score))%>%
+  filter(target== "Nova Scotia" & avg_score!= 0)
 
-for (f in files_plot){ #loop functions: for each plot with plot folder, change from tif to png and save to tif folder
-  
-  image<-rast(f)%>% #rasterize the tif
-    project('EPSG:4326') #project to correct projection
-  
-  name<-path_file(f) #read file name. E.g. species_name.csv
-  name<-path_ext_remove(name) #remove the ".csv" part of the name
-  
-  png(paste0('data/output_data/2011_2040_IPSL_CM6A_LR_ssp585/png/', name, '.png'),  width=718, height= 565, units="px") #save png files to png folder. change batch number as needed
-  plot(image, maxpixels=ncell(image)) #also, plot the new png file to verify that the code is working correctly
-  title(main=name) #add a title to each plot with the species name
-  dev.off()
-}
+write.csv(NS_list_2011_2040, "data/NS_list_2011_2040.csv")
+
+#filter the data to only retain the average climate match score for all of NS and species names
+NS_2011_2040_sp.names<-NS_list_2011_2040%>%
+  mutate(clim_match=case_when(
+    avg_score<= 1~ "Low",
+    avg_score<= 2~ "Medium",
+    avg_score<=5~"High"
+  ))%>%
+  select(species, avg_score, clim_match)%>%
+  distinct()%>%
+  add_column(batch="2011_2040")
+
+#compare to historic climate match results for NS 
+
+historic_combined<-read.csv("data/combined_species_assessments_batch_combined.csv")
+
+NS_historic<-historic_combined%>%
+  filter (target== "Nova Scotia" & score!= 0)%>%
+  group_by(species)%>% #group dtaaframe by species
+  mutate(avg_score=mean(score), n=n())%>% #take the average value over the 3 models
+  ungroup()%>% #ungroup dataframe
+  mutate(clim_match=case_when(
+    avg_score<= 1~ "Low",
+    avg_score<= 2~ "Medium",
+    avg_score<=5~"High"
+  ))%>%
+  select(species, avg_score, clim_match)%>%
+  distinct()%>%
+  add_column(batch="1981_2010")
+
+#add the species lists together
+NS_compare_batch<-rbind(NS_2011_2040_sp.names, NS_historic)
+
+#check number of duplicates (i.e. how many species have predicted climate match in 1980-2011 and 2011-2040 assessments?)
+sum(duplicated(NS_compare_batch$species))
+
+#make a copy of the list for furhter exploration outside of R
+write.csv(NS_compare_batch, "data/NS_Master_Species_List.csv")
+
+#Now checking to see
+ns_batch3<-batch3%>%
+  filter(target== "Nova Scotia" & score!= 0)
+n_distinct(ns_batch3$species)
+
+#find the species that need assesing outside R for native species, establishment, and aqautic or not
+NS_List_to_assess<-NS_compare_batch%>%
+  filter(batch =="2011_2040")%>%
+  anti_join (ns_list_comp, by="species")
+
+write.csv(NS_List_to_assess, "data/NS_2011_2040_list_to_screen_corrected.csv")
+
+#Now read back in the list of NS potential species that was assessed outside R
+NS_list_2011_2040_screened<-read.csv("data/NS_2011_2040_list_to_screen_corrected.csv")%>%
+  filter(native=="N")%>% #keep only species that are non-native
+  filter(established=="N")%>% #only keep species that have not alreayd been introduced to NS
+  filter(aquatic=="Y")%>% #retain all potentially aquatic species
+  filter(climate_mismatch=="N") #retain only species that have appropriate climate needs
+
+#export the finalized 2011-2040 screened species list
+write.csv(NS_list_2011_2040_screened, "data/NS_2011_2040_list_finalized.csv")
+
+############# Compare climate match results from Nova Scotia, New Brunswick, PEI with all other Canadian Provinces.
+
+#Gulf first
+
+
+NB_historic<-read.csv("data/combined_species_assessments_batch_combined.csv")%>%
+  filter (target %in% c("New Brunswick", "Prince Edward Island") & score!= 0)
+
+NB_historic_list<-NB_historic%>%
+  select (species)
+NB_future_list<-batch_combined%>%
+  select (species)
+
+NB_batch<-rbind(NB_historic_list, NB_future_list)%>%
+  distinct()
+
+NS_list<-read.csv("data/NS_Master_Species_List.csv")%>%
+  select (species)%>%
+  distinct()
+
+NS_to_NB<-NB_batch%>%
+  anti_join (NS_list, by="species")
+
+#Quebec
+
+QC_historic<-read.csv("data/combined_species_assessments_batch_combined.csv")%>%
+  filter (target=="Québec" & score!= 0)
+
+QC_historic_list<-QC_historic%>%
+  select (species)
+QC_future_list<-batch_combined%>%
+  select (species)
+
+QC_batch<-rbind(QC_historic_list, QC_future_list)%>%
+  distinct()
+
+NS_to_QC<-QC_batch%>%
+  anti_join (NS_list, by="species")
+
+#export the Quebec list of species
+write.csv(QC_batch, "data/QC_species_list.csv")
+
+#Ontario
+
+ON_historic<-read.csv("data/combined_species_assessments_batch_combined.csv")%>%
+  filter (target=="Ontario" & score!= 0)
+
+ON_historic_list<-ON_historic%>%
+  select (species)
+ON_future_list<-batch_combined%>%
+  select (species)
+
+ON_batch<-rbind(ON_historic_list, ON_future_list)%>%
+  distinct()
+
+NS_to_ON<-ON_batch%>%
+  anti_join (NS_list, by="species")
+
+#export the Ontario list of species
+write.csv(ON_batch, "data/ON_species_list.csv")
+
+#Manitoba
+
+MB_historic<-read.csv("data/combined_species_assessments_batch_combined.csv")%>%
+  filter (target=="Manitoba" & score!= 0)
+
+MB_historic_list<-MB_historic%>%
+  select (species)
+MB_future_list<-batch_combined%>%
+  select (species)
+
+MB_batch<-rbind(MB_historic_list, MB_future_list)%>%
+  distinct()
+
+NS_to_MB<-MB_batch%>%
+  anti_join (NS_list, by="species")
+
+#export the Ontario list of species
+write.csv(MB_batch, "data/MB_species_list.csv")
+
+#Newfoundland and Labrador
+
+NFL_historic<-read.csv("data/combined_species_assessments_batch_combined.csv")%>%
+  filter (target=="Newfoundland and Labrador" & score!= 0)
+
+NFL_historic_list<-NFL_historic%>%
+  select (species)
+NFL_future_list<-batch_combined%>%
+  select (species)
+
+NFL_batch<-rbind(NFL_historic_list, NFL_future_list)%>%
+  distinct()
+
+NS_to_NFL<-NFL_batch%>%
+  anti_join (NS_list, by="species")
+
+#export the Ontario list of species
+write.csv(NFL_batch, "data/NFL_species_list.csv")
+
+#Saskatchewan
+SK_historic<-read.csv("data/combined_species_assessments_batch_combined.csv")%>%
+  filter (target=="Saskatchewan" & score!= 0)
+
+SK_historic_list<-SK_historic%>%
+  select (species)
+SK_future_list<-batch_combined%>%
+  select (species)
+
+SK_batch<-rbind(SK_historic_list, SK_future_list)%>%
+  distinct()
+
+NS_to_SK<-SK_batch%>%
+  anti_join (NS_list, by="species")
+
+#export the Ontario list of species
+write.csv(SK_batch, "data/SK_species_list.csv")
+
+#Alberta
+AB_historic<-read.csv("data/combined_species_assessments_batch_combined.csv")%>%
+  filter (target=="Alberta" & score!= 0)
+
+AB_historic_list<-AB_historic%>%
+  select (species)
+AB_future_list<-batch_combined%>%
+  select (species)
+
+AB_batch<-rbind(AB_historic_list, AB_future_list)%>%
+  distinct()
+
+NS_to_AB<-AB_batch%>%
+  anti_join (NS_list, by="species")
+
+#export the Ontario list of species
+write.csv(AB_batch, "data/AB_species_list.csv")
+
+#British Columbia
+BC_historic<-read.csv("data/combined_species_assessments_batch_combined.csv")%>%
+  filter (target=="British Columbia" & score!= 0)
+
+BC_historic_list<-BC_historic%>%
+  select (species)
+BC_future_list<-batch_combined%>%
+  select (species)
+
+BC_batch<-rbind(BC_historic_list, BC_future_list)%>%
+  distinct()
+
+#export the Ontario list of species
+write.csv(BC_batch, "data/BC_species_list.csv")
+
+#Yukon
+YK_historic<-read.csv("data/combined_species_assessments_batch_combined.csv")%>%
+  filter (target=="Yukon" & score!= 0)
+
+YK_historic_list<-YK_historic%>%
+  select (species)
+YK_future_list<-batch_combined%>%
+  select (species)
+
+YK_batch<-rbind(YK_historic_list, YK_future_list)%>%
+  distinct()
+
+#export the Ontario list of species
+write.csv(YK_batch, "data/YK_species_list.csv")
